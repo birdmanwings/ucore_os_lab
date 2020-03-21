@@ -65,7 +65,7 @@ struct eipdebuginfo {
  * */
 static void
 stab_binsearch(const struct stab *stabs, int *region_left, int *region_right,
-           int type, uintptr_t addr) {
+               int type, uintptr_t addr) {
     int l = *region_left, r = *region_right, any_matches = 0;
 
     while (l <= r) {
@@ -73,7 +73,7 @@ stab_binsearch(const struct stab *stabs, int *region_left, int *region_right,
 
         // search for earliest stab with right type
         while (m >= l && stabs[m].n_type != type) {
-            m --;
+            m--;
         }
         if (m < l) {    // no match in [l, m]
             l = true_m + 1;
@@ -93,17 +93,16 @@ stab_binsearch(const struct stab *stabs, int *region_left, int *region_right,
             // *region_right
             *region_left = m;
             l = m;
-            addr ++;
+            addr++;
         }
     }
 
     if (!any_matches) {
         *region_right = *region_left - 1;
-    }
-    else {
+    } else {
         // find rightmost region containing 'addr'
         l = *region_right;
-        for (; l > *region_left && stabs[l].n_type != type; l --)
+        for (; l > *region_left && stabs[l].n_type != type; l--)
             /* do nothing */;
         *region_left = l;
     }
@@ -191,7 +190,7 @@ debuginfo_eip(uintptr_t addr, struct eipdebuginfo *info) {
     while (lline >= lfile
            && stabs[lline].n_type != N_SOL
            && (stabs[lline].n_type != N_SO || !stabs[lline].n_value)) {
-        lline --;
+        lline--;
     }
     if (lline >= lfile && stabs[lline].n_strx < stabstr_end - stabstr) {
         info->eip_file = stabstr + stabs[lline].n_strx;
@@ -202,8 +201,8 @@ debuginfo_eip(uintptr_t addr, struct eipdebuginfo *info) {
     if (lfun < rfun) {
         for (lline = lfun + 1;
              lline < rfun && stabs[lline].n_type == N_PSYM;
-             lline ++) {
-            info->eip_fn_narg ++;
+             lline++) {
+            info->eip_fn_narg++;
         }
     }
     return 0;
@@ -222,7 +221,7 @@ print_kerninfo(void) {
     cprintf("  etext  0x%08x (phys)\n", etext);
     cprintf("  edata  0x%08x (phys)\n", edata);
     cprintf("  end    0x%08x (phys)\n", end);
-    cprintf("Kernel executable memory footprint: %dKB\n", (end - kern_init + 1023)/1024);
+    cprintf("Kernel executable memory footprint: %dKB\n", (end - kern_init + 1023) / 1024);
 }
 
 /* *
@@ -234,11 +233,10 @@ print_debuginfo(uintptr_t eip) {
     struct eipdebuginfo info;
     if (debuginfo_eip(eip, &info) != 0) {
         cprintf("    <unknow>: -- 0x%08x --\n", eip);
-    }
-    else {
+    } else {
         char fnname[256];
         int j;
-        for (j = 0; j < info.eip_fn_namelen; j ++) {
+        for (j = 0; j < info.eip_fn_namelen; j++) {
             fnname[j] = info.eip_fn_name[j];
         }
         fnname[j] = '\0';
@@ -248,6 +246,7 @@ print_debuginfo(uintptr_t eip) {
 }
 
 static __noinline uint32_t
+
 read_eip(void) {
     uint32_t eip;
     asm volatile("movl 4(%%ebp), %0" : "=r" (eip));
@@ -290,17 +289,33 @@ read_eip(void) {
  * */
 void
 print_stackframe(void) {
-     /* LAB1 YOUR CODE : STEP 1 */
-     /* (1) call read_ebp() to get the value of ebp. the type is (uint32_t);
-      * (2) call read_eip() to get the value of eip. the type is (uint32_t);
-      * (3) from 0 .. STACKFRAME_DEPTH
-      *    (3.1) printf value of ebp, eip
-      *    (3.2) (uint32_t)calling arguments [0..4] = the contents in address (uint32_t)ebp +2 [0..4]
-      *    (3.3) cprintf("\n");
-      *    (3.4) call print_debuginfo(eip-1) to print the C calling function name and line number, etc.
-      *    (3.5) popup a calling stackframe
-      *           NOTICE: the calling funciton's return addr eip  = ss:[ebp+4]
-      *                   the calling funciton's ebp = ss:[ebp]
-      */
+    /* LAB1 YOUR CODE : STEP 1 */
+    /* (1) call read_ebp() to get the value of ebp. the type is (uint32_t);
+     * (2) call read_eip() to get the value of eip. the type is (uint32_t);
+     * (3) from 0 .. STACKFRAME_DEPTH
+     *    (3.1) printf value of ebp, eip
+     *    (3.2) (uint32_t)calling arguments [0..4] = the contents in address (uint32_t)ebp +2 [0..4]
+     *    (3.3) cprintf("\n");
+     *    (3.4) call print_debuginfo(eip-1) to print the C calling function name and line number, etc.
+     *    (3.5) popup a calling stackframe
+     *           NOTICE: the calling funciton's return addr eip  = ss:[ebp+4]
+     *                   the calling funciton's ebp = ss:[ebp]
+     */
+
+    uint32_t ebp = read_ebp();
+    uint32_t eip = read_eip();
+
+    int i, j;
+    for (i = 0; i < STACKFRAME_DEPTH && ebp != 0; i++) {
+        cprintf("ebp:0x%08x eip:0x%08x args:", ebp, eip);
+        uint32_t *args = (uint32_t *)ebp + 2;
+        for (j = 0; j < 4; j++) {
+            cprintf("0x%08x ", args[j]);
+        }
+        cprintf("\n");
+        print_debuginfo(eip - 1);
+        eip = ((uint32_t *)ebp)[1];
+        ebp = ((uint32_t *)ebp)[0];
+    }
 }
 
