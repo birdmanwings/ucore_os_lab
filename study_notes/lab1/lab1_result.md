@@ -1,6 +1,6 @@
 # 前言
 
-回头好好打基础，这次准备写写清华的ucore实验，废话不多说，先是lab1，代码还有相关的笔记资料放在github，都在study_notes文件下
+回头好好打基础，这次准备写写清华的ucore实验，废话不多说，先是lab1，代码还有相关的笔记资料放在[github](https://github.com/birdmanwings/ucore_os_lab)，都在study_notes文件下
 
 # 正文
 
