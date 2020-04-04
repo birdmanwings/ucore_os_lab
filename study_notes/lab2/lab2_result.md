@@ -236,7 +236,7 @@ default_free_pages(struct Page *base, size_t n) {
 // use PGADDR(PDX(la), PTX(la), PGOFF(la)).
 ```
 
-get_pte主要就是由页目录，一个la(线性地址)，是否创建create作为输入，首先根据输入的pgdir和la获得页表的地址，然后看PTE_P位是否设置，没有设置说明没有创建相对应的二级页表，再根据create参数来表名是否需要创建二级页表，获取物理页，设置引用，清空，设置PTE，最后利用PTX(la)获取中10位，加上我们获得页表项地址拿到物理页，KADDR根据物理页获取相对应的虚拟页表项。
+get_pte主要就是由页目录，一个la(线性地址)，是否创建create作为输入，首先根据输入的pgdir和la获得页表的地址，然后看PTE_P位是否设置，没有设置说明没有创建相对应的二级页表，再根据create参数来表名是否需要创建二级页表，获取物理页，设置引用，清空，设置PTE，最后利用PTX(la)获取中10位，加上我们获得页表项地址拿到物理地址，KADDR根据物理地址获取相对应的虚拟页地址
 
  ```c
 //get_pte - get pte and return the kernel virtual address of this pte for la
@@ -292,7 +292,7 @@ get_pte(pde_t *pgdir, uintptr_t la, bool create) {
         *pdep = pa | PTE_U | PTE_W | PTE_P;  // 设置页目录控制位
     }
     pte_t *pa = (pte_t *)PTE_ADDR(*pdep) + PTX(la); // 返回页的物理地址，我们找到的二级也白哦的入口，加上PTX(la)返回虚拟地址la的页表项索引就是中间10位
-    return KADDR((uintptr_t)pa);    // KADDR输入物理地址进行转换，得到的就是页表项入口
+    return KADDR((uintptr_t)pa);    // KADDR输入物理地址进行转换，得到的就是页表项入口地址
 }
  ```
 
