@@ -243,7 +243,7 @@ check_swap(void)
      
      for (i= 0;i<CHECK_VALID_PHY_PAGE_NUM;i++) {
          check_ptep[i]=0;
-         check_ptep[i] = get_pte(pgdir, (i+1)*0x1000, 0);
+         check_ptep[i] = get_pte(pgdir, (i+1)*0x1000, 0);//　访问测试，会触发缺页从而trap--> trap_dispatch-->pgfault_handler-->do_pgfault建立映射关系
          //cprintf("i %d, check_ptep addr %x, value %x\n", i, check_ptep[i], *check_ptep[i]);
          assert(check_ptep[i] != NULL);
          assert(pte2page(*check_ptep[i]) == check_rp[i]);
@@ -251,11 +251,11 @@ check_swap(void)
      }
      cprintf("set up init env for check_swap over!\n");
      // now access the virt pages to test  page relpacement algorithm 
-     ret=check_content_access();
+     ret=check_content_access();    // 调用后_fifo_check_swap方法测试算法的正确性
      assert(ret==0);
      
      //restore kernel mem env
-     for (i=0;i<CHECK_VALID_PHY_PAGE_NUM;i++) {
+     for (i=0;i<CHECK_VALID_PHY_PAGE_NUM;i++) { // 恢复ucore的环境
          free_pages(check_rp[i],1);
      } 
 

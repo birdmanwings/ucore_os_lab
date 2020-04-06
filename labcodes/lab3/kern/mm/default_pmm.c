@@ -152,30 +152,32 @@ default_free_pages(struct Page *base, size_t n) {
     assert(n > 0);
     struct Page *p = base;
     for (; p != base + n; p ++) {
-        assert(!PageReserved(p) && !PageProperty(p));
+        assert(!PageReserved(p) && !PageProperty(p));   // 断言PG_reserved不是0,即这个是保留的，并且断言PG_property不是1，即已经分配了的
         p->flags = 0;
         set_page_ref(p, 0);
     }
     base->property = n;
-    SetPageProperty(base);
-    list_entry_t *le = list_next(&free_list);
+    SetPageProperty(base);  // 设置base的flags的PG_property为1，表示是头空闲页并且是free的
+    list_entry_t *le = list_next(&free_list);   // 从next开始遍历双向链表
     while (le != &free_list) {
-        p = le2page(le, page_link);
-        le = list_next(le);
-        if (base + base->property == p) {
+        p = le2page(le, page_link); // 获取这个节点的头空闲页Page结构
+        le = list_next(le); // le指向下一个
+        if (base + base->property == p) {   // 如果base基址加上空闲块的数目正好是p，说明base向上合并
             base->property += p->property;
-            ClearPageProperty(p);
+            ClearPageProperty(p);   // 清除p这个页面的flags的PG_property为0，因为它不是头页面
             list_del(&(p->page_link));
-        }
-        else if (p + p->property == base) {
+        } else if (p + p->property == base) {   // 如果是向下合并的话，同理
             p->property += base->property;
             ClearPageProperty(base);
             base = p;
             list_del(&(p->page_link));
         }
     }
-    nr_free += n;
-    list_add(&free_list, &(base->page_link));
+    nr_free += n;   // 更新这个节点的nr_free的数量
+    le = &free_list;
+    while ((le = list_next(le)) != &free_list)  // 遍历双向链表，然后插入已经合并好的base
+        if (base < le2page(le, page_link)) break;
+    list_add_before(le, &base->page_link);
 }
 
 static size_t
@@ -243,7 +245,7 @@ default_check(void) {
     while ((le = list_next(le)) != &free_list) {
         struct Page *p = le2page(le, page_link);
         assert(PageProperty(p));
-        count ++, total += p->property;
+        count++, total += p->property;
     }
     assert(total == nr_free_pages());
 
@@ -293,7 +295,7 @@ default_check(void) {
     le = &free_list;
     while ((le = list_next(le)) != &free_list) {
         struct Page *p = le2page(le, page_link);
-        count --, total -= p->property;
+        count--, total -= p->property;
     }
     assert(count == 0);
     assert(total == 0);
