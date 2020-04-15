@@ -20,7 +20,7 @@ schedule(void) {
         current->need_resched = 0;
         last = (current == idleproc) ? &proc_list : &(current->list_link);
         le = last;
-        do {
+        do {  // find the fist proc that state is PROC_RUNNABLE
             if ((le = list_next(le)) != &proc_list) {
                 next = le2proc(le, list_link);
                 if (next->state == PROC_RUNNABLE) {
@@ -32,7 +32,7 @@ schedule(void) {
             next = idleproc;
         }
         next->runs ++;
-        if (next != current) {
+        if (next != current) {  // if find the next proc that is different from current proc
             proc_run(next);
         }
     }

@@ -78,7 +78,9 @@ struct proc_struct *current = NULL;
 static int nr_process = 0;
 
 void kernel_thread_entry(void);
+
 void forkrets(struct trapframe *tf);
+
 void switch_to(struct context *from, struct context *to);
 
 // alloc_proc - alloc a proc_struct and init all fields of proc_struct
@@ -86,22 +88,34 @@ static struct proc_struct *
 alloc_proc(void) {
     struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
     if (proc != NULL) {
-    //LAB4:EXERCISE1 YOUR CODE
-    /*
-     * below fields in proc_struct need to be initialized
-     *       enum proc_state state;                      // Process state
-     *       int pid;                                    // Process ID
-     *       int runs;                                   // the running times of Proces
-     *       uintptr_t kstack;                           // Process kernel stack
-     *       volatile bool need_resched;                 // bool value: need to be rescheduled to release CPU?
-     *       struct proc_struct *parent;                 // the parent process
-     *       struct mm_struct *mm;                       // Process's memory management field
-     *       struct context context;                     // Switch here to run process
-     *       struct trapframe *tf;                       // Trap frame for current interrupt
-     *       uintptr_t cr3;                              // CR3 register: the base addr of Page Directroy Table(PDT)
-     *       uint32_t flags;                             // Process flag
-     *       char name[PROC_NAME_LEN + 1];               // Process name
-     */
+        //LAB4:EXERCISE1 YOUR CODE
+        /*
+         * below fields in proc_struct need to be initialized
+         *       enum proc_state state;                      // Process state
+         *       int pid;                                    // Process ID
+         *       int runs;                                   // the running times of Proces
+         *       uintptr_t kstack;                           // Process kernel stack
+         *       volatile bool need_resched;                 // bool value: need to be rescheduled to release CPU?
+         *       struct proc_struct *parent;                 // the parent process
+         *       struct mm_struct *mm;                       // Process's memory management field
+         *       struct context context;                     // Switch here to run process
+         *       struct trapframe *tf;                       // Trap frame for current interrupt
+         *       uintptr_t cr3;                              // CR3 register: the base addr of Page Directroy Table(PDT)
+         *       uint32_t flags;                             // Process flag
+         *       char name[PROC_NAME_LEN + 1];               // Process name
+         */
+        proc->state = PROC_UNINIT;
+        proc->pid = -1;
+        proc->runs = 0;
+        proc->kstack = 0;
+        proc->need_resched = 0; // needn't to schedule
+        proc->parent = NULL;
+        proc->mm = NULL;
+        memset(&(proc->context), 0, sizeof(struct context));
+        proc->tf = NULL;
+        proc->cr3 = boot_cr3;  // boot_cr3 is pointed to page directory's physical location in pmm_init() function
+        proc->flags = 0;
+        memset(proc->name, 0, PROC_NAME_LEN);
     }
     return proc;
 }
@@ -128,27 +142,26 @@ get_pid(void) {
     struct proc_struct *proc;
     list_entry_t *list = &proc_list, *le;
     static int next_safe = MAX_PID, last_pid = MAX_PID;
-    if (++ last_pid >= MAX_PID) {
+    if (++last_pid >= MAX_PID) {
         last_pid = 1;
         goto inside;
     }
     if (last_pid >= next_safe) {
-    inside:
+        inside:
         next_safe = MAX_PID;
-    repeat:
+        repeat:
         le = list;
         while ((le = list_next(le)) != list) {
             proc = le2proc(le, list_link);
             if (proc->pid == last_pid) {
-                if (++ last_pid >= next_safe) {
+                if (++last_pid >= next_safe) {
                     if (last_pid >= MAX_PID) {
                         last_pid = 1;
                     }
                     next_safe = MAX_PID;
                     goto repeat;
                 }
-            }
-            else if (proc->pid > last_pid && next_safe > proc->pid) {
+            } else if (proc->pid > last_pid && next_safe > proc->pid) {
                 next_safe = proc->pid;
             }
         }
@@ -166,9 +179,9 @@ proc_run(struct proc_struct *proc) {
         local_intr_save(intr_flag);
         {
             current = proc;
-            load_esp0(next->kstack + KSTACKSIZE);
-            lcr3(next->cr3);
-            switch_to(&(prev->context), &(next->context));
+            load_esp0(next->kstack + KSTACKSIZE);    // set the esp0 in ts point to next proc stack's top for trap, interrupt etc.
+            lcr3(next->cr3);                               // set the value ine cr3 reg to next proc, it means change the page table
+            switch_to(&(prev->context), &(next->context)); // switch the context between two proc
         }
         local_intr_restore(intr_flag);
     }
@@ -212,9 +225,9 @@ kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags) {
     memset(&tf, 0, sizeof(struct trapframe));
     tf.tf_cs = KERNEL_CS;
     tf.tf_ds = tf.tf_es = tf.tf_ss = KERNEL_DS;
-    tf.tf_regs.reg_ebx = (uint32_t)fn;
-    tf.tf_regs.reg_edx = (uint32_t)arg;
-    tf.tf_eip = (uint32_t)kernel_thread_entry;
+    tf.tf_regs.reg_ebx = (uint32_t) fn;
+    tf.tf_regs.reg_edx = (uint32_t) arg;
+    tf.tf_eip = (uint32_t) kernel_thread_entry;
     return do_fork(clone_flags | CLONE_VM, 0, &tf);
 }
 
@@ -223,7 +236,7 @@ static int
 setup_kstack(struct proc_struct *proc) {
     struct Page *page = alloc_pages(KSTACKPAGE);
     if (page != NULL) {
-        proc->kstack = (uintptr_t)page2kva(page);
+        proc->kstack = (uintptr_t) page2kva(page);
         return 0;
     }
     return -E_NO_MEM;
@@ -232,7 +245,7 @@ setup_kstack(struct proc_struct *proc) {
 // put_kstack - free the memory space of process kernel stack
 static void
 put_kstack(struct proc_struct *proc) {
-    free_pages(kva2page((void *)(proc->kstack)), KSTACKPAGE);
+    free_pages(kva2page((void *) (proc->kstack)), KSTACKPAGE);
 }
 
 // copy_mm - process "proc" duplicate OR share process "current"'s mm according clone_flags
@@ -248,14 +261,14 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc) {
 //             - setup the kernel entry point and stack of process
 static void
 copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf) {
-    proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE) - 1;
+    proc->tf = (struct trapframe *) (proc->kstack + KSTACKSIZE) - 1;
     *(proc->tf) = *tf;
-    proc->tf->tf_regs.reg_eax = 0;
+    proc->tf->tf_regs.reg_eax = 0;  // set the return value after child proc/thread finished
     proc->tf->tf_esp = esp;
-    proc->tf->tf_eflags |= FL_IF;
+    proc->tf->tf_eflags |= FL_IF;  // FL_IF means this child proc can be trapped
 
-    proc->context.eip = (uintptr_t)forkret;
-    proc->context.esp = (uintptr_t)(proc->tf);
+    proc->context.eip = (uintptr_t) forkret;  // set the next command in the last interrupt
+    proc->context.esp = (uintptr_t) (proc->tf);  // set the esp in the last interrupt
 }
 
 /* do_fork -     parent process for a new child process
@@ -296,12 +309,35 @@ do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     //    5. insert proc_struct into hash_list && proc_list
     //    6. call wakeup_proc to make the new child process RUNNABLE
     //    7. set ret vaule using child proc's pid
-fork_out:
+    if ((proc = alloc_proc()) == NULL) {  // allocate memory
+        goto fork_out;
+    }
+    proc->parent = current;
+    if (setup_kstack(proc) != 0) {  // allocate a kernel stack
+        goto bad_fork_cleanup_proc;
+    }
+    if (copy_mm(clone_flags, proc) != 0) {  // clone parent's mm
+        goto bad_fork_cleanup_kstack;
+    }
+    copy_thread(proc, stack, tf);  // setup tf and context eip and esp
+    bool intr_flag;
+    local_intr_save(intr_flag);  // make sure when adjust the memory data, it won't be interrupted according to eflag
+    {
+        proc->pid = get_pid();
+        hash_proc(proc);  // add proc in hash list
+        list_add(&proc_list, &(proc->list_link));  // add proc into proc list
+        nr_process++;
+    }
+    local_intr_restore(intr_flag);
+    wakeup_proc(proc);  // wake up proc
+    ret = proc->pid;  // return child proc's pid
+
+    fork_out:
     return ret;
 
-bad_fork_cleanup_kstack:
+    bad_fork_cleanup_kstack:
     put_kstack(proc);
-bad_fork_cleanup_proc:
+    bad_fork_cleanup_proc:
     kfree(proc);
     goto fork_out;
 }
@@ -319,7 +355,7 @@ do_exit(int error_code) {
 static int
 init_main(void *arg) {
     cprintf("this initproc, pid = %d, name = \"%s\"\n", current->pid, get_proc_name(current));
-    cprintf("To U: \"%s\".\n", (const char *)arg);
+    cprintf("To U: \"%s\".\n", (const char *) arg);
     cprintf("To U: \"en.., Bye, Bye. :)\"\n");
     return 0;
 }
@@ -331,7 +367,7 @@ proc_init(void) {
     int i;
 
     list_init(&proc_list);
-    for (i = 0; i < HASH_LIST_SIZE; i ++) {
+    for (i = 0; i < HASH_LIST_SIZE; i++) {
         list_init(hash_list + i);
     }
 
@@ -341,10 +377,10 @@ proc_init(void) {
 
     idleproc->pid = 0;
     idleproc->state = PROC_RUNNABLE;
-    idleproc->kstack = (uintptr_t)bootstack;
-    idleproc->need_resched = 1;
+    idleproc->kstack = (uintptr_t) bootstack;  // set the kernel addr for idle
+    idleproc->need_resched = 1;  // if the need_resched = 1, cpu_idle will schedule another proc
     set_proc_name(idleproc, "idle");
-    nr_process ++;
+    nr_process++;
 
     current = idleproc;
 

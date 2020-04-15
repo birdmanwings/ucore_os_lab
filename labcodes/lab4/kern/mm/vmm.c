@@ -393,6 +393,31 @@ do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr) {
         }
    }
 #endif
+    ptep = get_pte(mm->pgdir, addr, 1);
+    if (ptep == NULL) { // 当页表不存在时
+        cprintf("get_pte in do_pgfault function failed\n");
+        goto failed;
+    }
+    if (*ptep == 0) {   // 物理地址不存在时
+        if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL) {  // 申请物理页，并映射物理地址和逻辑地址
+            cprintf("pgdir_alloc_page in do_pgfault function failed\n");
+            goto failed;
+        }
+    } else { // 物理地址存在，即页表项有效时,尝试换入页面
+        if (swap_init_ok) {
+            struct Page *page = NULL;
+            if ((ret = swap_in(mm, addr, &page)) != 0) {    // 将硬盘中的内容加载到page里面
+                cprintf("swap_in in do_pgfault function failed\n");
+                goto failed;
+            }
+            page_insert(mm->pgdir, page, addr, perm);   // 建立物理地址和逻辑地址的映射
+            swap_map_swappable(mm, addr, page, 1);  // 指明这个页是可以交换的
+            page->pra_vaddr = addr;                 // 注意Page结构里面新添加了一个pra_vaddr这个变量,用来指明换出内存的是哪个页
+        } else {
+            cprintf("no swap_init_ok but ptep is %x, failed\n", *ptep);
+            goto failed;
+        }
+    }
    ret = 0;
 failed:
     return ret;
