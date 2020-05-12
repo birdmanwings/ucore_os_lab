@@ -375,6 +375,19 @@ get_pte(pde_t *pgdir, uintptr_t la, bool create) {
     }
     return NULL;          // (8) return page table entry
 #endif
+    pde_t *pdep = &pgdir[PDX(la)];  // 尝试获取页表，pgdir是一级页表本身,PDX(la)获取一级页表项的索引，就是高10位
+    if ((*pdep & PTE_P) == 0) {     // 如果没有设置PTE_P位的话
+        if (!create) return NULL;   // 如果create为0不创建二级页表直接返回
+        struct Page *page = alloc_page();   // 否则申请一个物理页
+        if (page == NULL) return NULL;  // 申请失败了就返回
+        set_page_ref(page, 1);  // 成功的话，这个物理页的引用+1
+        uintptr_t pa = page2pa(page);   // 获取这个物理页的线性地址
+        memset(KADDR(pa), 0, PGSIZE);   // 清除这个页面的n个字节
+        *pdep = pa | PTE_U | PTE_W | PTE_P;  // 设置页目录控制位
+    }
+    pte_t *pa = (pte_t *) PTE_ADDR(*pdep) + PTX(la); // 返回页的物理地址，我们找到的二级也白哦的入口，加上PTX(la)返回虚拟地址la的页表项索引就是中间10位
+    return KADDR((uintptr_t) pa);    // KADDR输入物理地址进行转换，得到的就是页表项入口
+
 }
 
 //get_page - get related Page struct for linear address la using PDT pgdir
@@ -420,6 +433,14 @@ page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
                                   //(6) flush tlb
     }
 #endif
+    if (*ptep & PTE_P) {    // 判断这个页表中的页表项是否存在
+        struct Page *page = pte2page(*ptep);    // 从这个页表项获取相对的页表
+        if (page_ref_dec(page) == 0) {  // 如果这个页表只被引用了一次那么直接释放这个页表
+            free_page(page);
+        }
+        *ptep = 0;  //　释放二级页表中这个页表项
+        tlb_invalidate(pgdir, la);  //　更新页表
+    }
 }
 
 void
@@ -501,6 +522,12 @@ copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share) {
          * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
          * (4) build the map of phy addr of  nage with the linear addr start
          */
+        void *kva_src = page2kva(page);
+        void *kva_dst = page2kva(npage);
+
+        memcpy(kva_dst, kva_src, PGSIZE);
+
+        ret = page_insert(to, npage, start, perm);
         assert(ret == 0);
         }
         start += PGSIZE;
