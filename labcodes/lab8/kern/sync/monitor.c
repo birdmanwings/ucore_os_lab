@@ -37,6 +37,12 @@ cond_signal (condvar_t *cvp) {
    *          }
    *       }
    */
+    if(cvp->count>0) {  // if there is sleeping proc
+        cvp->owner->next_count ++;  // signal other proc, and wait self, so next_count + 1
+        up(&(cvp->sem));  // wake up the proc sleeping on this condition var
+        down(&(cvp->owner->next));  // then sleep itself
+        cvp->owner->next_count --;  // return from other proc then it wakes up, the next_count - 1
+    }
    cprintf("cond_signal end: cvp %x, cvp->count %d, cvp->owner->next_count %d\n", cvp, cvp->count, cvp->owner->next_count);
 }
 
@@ -55,5 +61,12 @@ cond_wait (condvar_t *cvp) {
     *         wait(cv.sem);
     *         cv.count --;
     */
+    cvp->count++;  // the number of need sleeping on this condition var proc + 1
+    if(cvp->owner->next_count > 0)  // if next_count > 0, wake up next proc
+        up(&(cvp->owner->next));
+    else
+        up(&(cvp->owner->mutex));  // else wake up sleeping on the mutex proc
+    down(&(cvp->sem));  // wait itself
+    cvp->count --;  // after other proc return then it wake up, the next_count - 1
     cprintf("cond_wait end:  cvp %x, cvp->count %d, cvp->owner->next_count %d\n", cvp, cvp->count, cvp->owner->next_count);
 }

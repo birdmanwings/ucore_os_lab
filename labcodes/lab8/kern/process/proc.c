@@ -108,7 +108,7 @@ alloc_proc(void) {
      */
      //LAB5 YOUR CODE : (update LAB4 steps)
     /*
-     * below fields(add in LAB5) in proc_struct need to be initialized	
+     * below fields(add in LAB5) in proc_struct need to be initialized
      *       uint32_t wait_state;                        // waiting state
      *       struct proc_struct *cptr, *yptr, *optr;     // relations between processes
 	 */
@@ -123,6 +123,29 @@ alloc_proc(void) {
      *     uint32_t lab6_priority;                     // FOR LAB6 ONLY: the priority of process, set by lab6_set_priority(uint32_t)
      */
     //LAB8:EXERCISE2 YOUR CODE HINT:need add some code to init fs in proc_struct, ...
+        proc->state = PROC_UNINIT;
+        proc->pid = -1;
+        proc->runs = 0;
+        proc->kstack = 0;
+        proc->need_resched = 0; // needn't to schedule
+        proc->parent = NULL;
+        proc->mm = NULL;
+        memset(&(proc->context), 0, sizeof(struct context));
+        proc->tf = NULL;
+        proc->cr3 = boot_cr3;  // boot_cr3 is pointed to page directory's physical location in pmm_init() function
+        proc->flags = 0;
+        memset(proc->name, 0, PROC_NAME_LEN);
+        // from here is lab5
+        proc->wait_state = 0;  // init process wait state
+        proc->cptr = proc->optr = proc->yptr = NULL;  // init the pointers of processs
+        // from here is lab6
+        proc->rq = NULL; // init the running queue with NULL
+        list_init(&(proc->run_link));  // init the entry linked pointer
+        proc->time_slice = 0;  // init the time slice
+        proc->lab6_run_pool.left = proc->lab6_run_pool.right = proc->lab6_run_pool.parent = NULL;  // init the different pointer
+        proc->lab6_stride = 0;  // init the stride
+        proc->lab6_priority = 0; // init the priority
+        proc->filesp = NULL;  // init the files_struct
     }
     return proc;
 }
@@ -259,7 +282,7 @@ find_proc(int pid) {
 }
 
 // kernel_thread - create a kernel thread using "fn" function
-// NOTE: the contents of temp trapframe tf will be copied to 
+// NOTE: the contents of temp trapframe tf will be copied to
 //       proc->tf in do_fork-->copy_thread function
 int
 kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags) {
@@ -456,12 +479,38 @@ do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
 
 	//LAB5 YOUR CODE : (update LAB4 steps)
    /* Some Functions
-    *    set_links:  set the relation links of process.  ALSO SEE: remove_links:  lean the relation links of process 
+    *    set_links:  set the relation links of process.  ALSO SEE: remove_links:  lean the relation links of process
     *    -------------------
 	*    update step 1: set child proc's parent to current process, make sure current process's wait_state is 0
 	*    update step 5: insert proc_struct into hash_list && proc_list, set the relation links of process
     */
-	
+    if ((proc = alloc_proc()) == NULL) {  // allocate memory
+        goto fork_out;
+    }
+    proc->parent = current;
+    assert(current->wait_state == 0);// make sure process is waiting
+    if (setup_kstack(proc) != 0) {  // allocate a kernel stack
+        goto bad_fork_cleanup_proc;
+    }
+
+    if (copy_files(clone_flags, proc) != 0) { //for LAB8
+        goto bad_fork_cleanup_kstack;
+    }
+
+    if (copy_mm(clone_flags, proc) != 0) {  // clone parent's mm
+        goto bad_fork_cleanup_fs;
+    }
+    copy_thread(proc, stack, tf);  // setup tf and context eip and esp
+    bool intr_flag;
+    local_intr_save(intr_flag);  // make sure when adjust the memory data, it won't be interrupted according to eflag
+    {
+        proc->pid = get_pid();
+        hash_proc(proc);  // add proc in hash list
+        set_links(proc);  // lab5 set link about the process
+    }
+    local_intr_restore(intr_flag);
+    wakeup_proc(proc);  // wake up proc
+    ret = proc->pid;  // return child proc's pid
 fork_out:
     return ret;
 
@@ -486,7 +535,7 @@ do_exit(int error_code) {
     if (current == initproc) {
         panic("initproc exit.\n");
     }
-    
+
     struct mm_struct *mm = current->mm;
     if (mm != NULL) {
         lcr3(boot_cr3);
@@ -500,7 +549,7 @@ do_exit(int error_code) {
     put_files(current); //for LAB8
     current->state = PROC_ZOMBIE;
     current->exit_code = error_code;
-    
+
     bool intr_flag;
     struct proc_struct *proc;
     local_intr_save(intr_flag);
@@ -512,7 +561,7 @@ do_exit(int error_code) {
         while (current->cptr != NULL) {
             proc = current->cptr;
             current->cptr = proc->optr;
-    
+
             proc->yptr = NULL;
             if ((proc->optr = initproc->cptr) != NULL) {
                 initproc->cptr->yptr = proc;
@@ -527,7 +576,7 @@ do_exit(int error_code) {
         }
     }
     local_intr_restore(intr_flag);
-    
+
     schedule();
     panic("do_exit will not return!! %d.\n", current->pid);
 }
@@ -546,7 +595,7 @@ load_icode_read(int fd, void *buf, size_t len, off_t offset) {
 }
 
 // load_icode -  called by sys_exec-->do_execve
-  
+
 static int
 load_icode(int fd, int argc, char **kargv) {
     /* LAB8:EXERCISE2 YOUR CODE  HINT:how to load the file with handler fd  in to process's memory? how to setup argc/argv?
@@ -573,6 +622,167 @@ load_icode(int fd, int argc, char **kargv) {
      * (7) setup trapframe for user environment
      * (8) if up steps failed, you should cleanup the env.
      */
+    assert(argc >= 0 && argc <= EXEC_MAX_ARG_NUM);
+
+    if (current->mm != NULL) {
+        panic("load_icode: current->mm must be empty.\n");
+    }
+
+    int ret = -E_NO_MEM;
+    struct mm_struct *mm;
+    if ((mm = mm_create()) == NULL) {  // create mm struct
+        goto bad_mm;
+    }
+    if (setup_pgdir(mm) != 0) {  // set the PDT
+        goto bad_pgdir_cleanup_mm;
+    }
+
+    struct Page *page;
+
+    // load the file into memory
+    struct elfhdr __elf, *elf = &__elf;
+    if ((ret = load_icode_read(fd, elf, sizeof(struct elfhdr), 0)) != 0) {  // load the elf header information
+        goto bad_elf_cleanup_pgdir;
+    }
+
+    if (elf->e_magic != ELF_MAGIC) {  // judge the elf is right
+        ret = -E_INVAL_ELF;
+        goto bad_elf_cleanup_pgdir;
+    }
+
+    struct proghdr __ph, *ph = &__ph;
+    uint32_t vm_flags, perm, phnum;
+    // load each segment file header
+    for (phnum = 0; phnum < elf->e_phnum; phnum ++) {
+        off_t phoff = elf->e_phoff + sizeof(struct proghdr) * phnum;
+        if ((ret = load_icode_read(fd, ph, sizeof(struct proghdr), phoff)) != 0) {
+            goto bad_cleanup_mmap;
+        }
+        if (ph->p_type != ELF_PT_LOAD) {
+            continue ;
+        }
+        if (ph->p_filesz > ph->p_memsz) {
+            ret = -E_INVAL_ELF;
+            goto bad_cleanup_mmap;
+        }
+        if (ph->p_filesz == 0) {
+            continue ;
+        }
+        vm_flags = 0, perm = PTE_U;  // set virtual address to physical address
+        if (ph->p_flags & ELF_PF_X) vm_flags |= VM_EXEC;
+        if (ph->p_flags & ELF_PF_W) vm_flags |= VM_WRITE;
+        if (ph->p_flags & ELF_PF_R) vm_flags |= VM_READ;
+        if (vm_flags & VM_WRITE) perm |= PTE_W;
+        if ((ret = mm_map(mm, ph->p_va, ph->p_memsz, vm_flags, NULL)) != 0) {
+            goto bad_cleanup_mmap;
+        }
+        off_t offset = ph->p_offset;
+        size_t off, size;
+        uintptr_t start = ph->p_va, end, la = ROUNDDOWN(start, PGSIZE);
+
+        ret = -E_NO_MEM;
+
+        // copy the data segment and code segment
+        end = ph->p_va + ph->p_filesz;
+        while (start < end) {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {
+                ret = -E_NO_MEM;
+                goto bad_cleanup_mmap;
+            }
+            off = start - la, size = PGSIZE - off, la += PGSIZE;
+            if (end < la) {
+                size -= la - end;
+            }
+            if ((ret = load_icode_read(fd, page2kva(page) + off, size, offset)) != 0) {
+                goto bad_cleanup_mmap;
+            }
+            start += size, offset += size;
+        }
+        // set the BSS segment
+        end = ph->p_va + ph->p_memsz;
+
+        if (start < la) {
+            /* ph->p_memsz == ph->p_filesz */
+            if (start == end) {
+                continue ;
+            }
+            off = start + PGSIZE - la, size = PGSIZE - off;
+            if (end < la) {
+                size -= la - end;
+            }
+            memset(page2kva(page) + off, 0, size);
+            start += size;
+            assert((end < la && start == end) || (end >= la && start == la));
+        }
+        while (start < end) {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {
+                ret = -E_NO_MEM;
+                goto bad_cleanup_mmap;
+            }
+            off = start - la, size = PGSIZE - off, la += PGSIZE;
+            if (end < la) {
+                size -= la - end;
+            }
+            memset(page2kva(page) + off, 0, size);
+            start += size;
+        }
+    }
+    sysfile_close(fd);  // close the file
+
+    // set virtual memory map
+    vm_flags = VM_READ | VM_WRITE | VM_STACK;
+    if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0) {
+        goto bad_cleanup_mmap;
+    }
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-PGSIZE , PTE_USER) != NULL);
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-2*PGSIZE , PTE_USER) != NULL);
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-3*PGSIZE , PTE_USER) != NULL);
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-4*PGSIZE , PTE_USER) != NULL);
+
+    // set the user stack
+    mm_count_inc(mm);
+    current->mm = mm;
+    current->cr3 = PADDR(mm->pgdir);
+    lcr3(PADDR(mm->pgdir));
+
+    //setup argc, argv
+    uint32_t argv_size=0, i;
+    for (i = 0; i < argc; i ++) {
+        argv_size += strnlen(kargv[i],EXEC_MAX_ARG_LEN + 1)+1;
+    }
+
+    uintptr_t stacktop = USTACKTOP - (argv_size/sizeof(long)+1)*sizeof(long);
+    char** uargv=(char **)(stacktop  - argc * sizeof(char *));
+
+    argv_size = 0;
+    for (i = 0; i < argc; i ++) {
+        uargv[i] = strcpy((char *)(stacktop + argv_size ), kargv[i]);
+        argv_size +=  strnlen(kargv[i],EXEC_MAX_ARG_LEN + 1)+1;
+    }
+
+    stacktop = (uintptr_t)uargv - sizeof(int);  // get the stack top
+    *(int *)stacktop = argc;
+
+    // set the process trapframe
+    struct trapframe *tf = current->tf;
+    memset(tf, 0, sizeof(struct trapframe));
+    tf->tf_cs = USER_CS;
+    tf->tf_ds = tf->tf_es = tf->tf_ss = USER_DS;
+    tf->tf_esp = stacktop;
+    tf->tf_eip = elf->e_entry;
+    tf->tf_eflags = FL_IF;
+    ret = 0;
+    // error handle
+    out:
+    return ret;
+    bad_cleanup_mmap:
+    exit_mmap(mm);
+    bad_elf_cleanup_pgdir:
+    put_pgdir(mm);
+    bad_pgdir_cleanup_mm:
+    mm_destroy(mm);
+    bad_mm:
+    goto out;
 }
 
 // this function isn't very correct in LAB8
@@ -621,12 +831,12 @@ do_execve(const char *name, int argc, const char **argv) {
 
     char local_name[PROC_NAME_LEN + 1];
     memset(local_name, 0, sizeof(local_name));
-    
+
     char *kargv[EXEC_MAX_ARG_NUM];
     const char *path;
-    
+
     int ret = -E_INVAL;
-    
+
     lock_mm(mm);
     if (name == NULL) {
         snprintf(local_name, sizeof(local_name), "<null> %d", current->pid);
@@ -645,7 +855,7 @@ do_execve(const char *name, int argc, const char **argv) {
     unlock_mm(mm);
     files_closeall(current->filesp);
 
-    /* sysfile_open will check the first argument path, thus we have to use a user-space pointer, and argv[0] may be incorrect */    
+    /* sysfile_open will check the first argument path, thus we have to use a user-space pointer, and argv[0] may be incorrect */
     int fd;
     if ((ret = fd = sysfile_open(path, O_RDONLY)) < 0) {
         goto execve_exit;
@@ -812,7 +1022,7 @@ init_main(void *arg) {
     if ((ret = vfs_set_bootfs("disk0:")) != 0) {
         panic("set boot fs failed: %e.\n", ret);
     }
-    
+
     size_t nr_free_pages_store = nr_free_pages();
     size_t kernel_allocated_store = kallocated();
 
@@ -828,7 +1038,7 @@ init_main(void *arg) {
     }
 
     fs_cleanup();
-        
+
     cprintf("all user-mode processes have quit.\n");
     assert(initproc->cptr == NULL && initproc->yptr == NULL && initproc->optr == NULL);
     assert(nr_process == 2);
@@ -858,12 +1068,12 @@ proc_init(void) {
     idleproc->state = PROC_RUNNABLE;
     idleproc->kstack = (uintptr_t)bootstack;
     idleproc->need_resched = 1;
-    
+
     if ((idleproc->filesp = files_create()) == NULL) {
         panic("create filesp (idleproc) failed.\n");
     }
     files_count_inc(idleproc->filesp);
-    
+
     set_proc_name(idleproc, "idle");
     nr_process ++;
 
